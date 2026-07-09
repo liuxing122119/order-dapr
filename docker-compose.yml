@@ -1,0 +1,34 @@
+services:
+  dapr_postgres:
+    container_name: dapr_postgres
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: orderdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - dapr_postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orderdb"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    network_mode: bridge
+
+  dapr_jaeger:
+    container_name: dapr_jaeger
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: true
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+      - "4317:4317"
+    network_mode: bridge
+
+volumes:
+  dapr_postgres-data:

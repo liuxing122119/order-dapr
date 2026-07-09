@@ -1,0 +1,44 @@
+apiVersion: dapr.io/v1alpha1
+kind: Resiliency
+metadata:
+  name: order-resilience-policies
+spec:
+  policies:
+    retries:
+      # 重试策略：最多3次，指数退避（初始1秒，最大5秒）
+      order-retry-policy:
+        policy: constant
+        duration: 1s
+        maxRetries: 3
+        maxInterval: 5s
+
+    timeouts:
+      # 超时策略：服务调用最多等待5秒
+      order-timeout-policy: 5s
+
+    circuitBreakers:
+      # 断路器策略：失败率50%触发熔断，持续10秒后尝试恢复
+      order-circuit-breaker:
+        maxRequests: 5              # 半开状态允许的最大请求数
+        timeout: 10s                # 熔断持续时间（冷却期）
+        trip: consecutiveFailures > 3  # 连续失败3次触发熔断
+
+  targets:
+    apps:
+      # 对用户服务的调用应用所有弹性策略
+      user-service:
+        retry: order-retry-policy
+        timeout: order-timeout-policy
+        circuitBreaker: order-circuit-breaker
+
+      # 对库存服务的调用应用断路器（库存检查可能频繁）
+      inventory-service:
+        retry: order-retry-policy
+        timeout: order-timeout-policy
+        circuitBreaker: order-circuit-breaker
+
+      # 对支付服务的调用应用严格的重试和超时
+      payment-service:
+        retry: order-retry-policy
+        timeout: order-timeout-policy
+        circuitBreaker: order-circuit-breaker

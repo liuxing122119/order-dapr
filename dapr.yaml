@@ -1,0 +1,29 @@
+version: 1
+common:
+  resourcesPath: ./dapr/components
+  configFilePath: ./dapr/config.yaml
+
+apps:
+  - appID: user-service
+    appDirPath: ./services/user-service
+    appPort: 5001
+    daprHTTPPort: 3501
+    command: ["go", "run", "main.go"]
+
+  - appID: order-service
+    appDirPath: ./services/order-service
+    appPort: 5002
+    daprHTTPPort: 3502
+    command: ["go", "run", "."]
+
+  - appID: payment-service
+    appDirPath: ./services/payment-service
+    appPort: 5003
+    daprHTTPPort: 3503
+    command: ["go", "run", "main.go"]
+
+  - appID: inventory-service
+    appDirPath: ./services/inventory-service
+    appPort: 5004
+    daprHTTPPort: 3504
+    command: ["go", "run", "main.go"]

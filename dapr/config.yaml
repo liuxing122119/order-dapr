@@ -1,0 +1,27 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: order-dapr-config
+spec:
+  tracing:
+    samplingRate: "1"
+    jaeger:
+      endpointAddress: "http://localhost:14268/api/traces"
+
+  features:
+    - name: Resiliency
+      enabled: true
+
+  accessControlAllowOrigins:
+    - "*"
+
+  metrics:
+    enabled: true
+    rules:
+      - name: dapr_system
+        description: Dapr system metrics
+        labels:
+          app: "dapr"
+        accesses:
+          - action: get
+            defaultAction: allow
