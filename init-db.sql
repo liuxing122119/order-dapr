@@ -1,6 +1,3 @@
--- Dapr Order Processing System - PostgreSQL Schema
--- Database: orderdb
-
 CREATE TABLE IF NOT EXISTS users (
     user_id VARCHAR(255) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -57,16 +54,3 @@ CREATE INDEX idx_orders_status ON orders(status);
 CREATE INDEX idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX idx_payments_order_id ON payments(order_id);
 CREATE INDEX idx_inventory_category ON inventory(category);
-
--- PubSub Events Table (for event sourcing)
-CREATE TABLE IF NOT EXISTS pubsub_events (
-    id SERIAL PRIMARY KEY,
-    event_type VARCHAR(100) NOT NULL,
-    topic VARCHAR(100) NOT NULL,
-    payload JSONB NOT NULL,
-    published_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    processed BOOLEAN DEFAULT FALSE
-);
-
-CREATE INDEX idx_pubsub_events_topic ON pubsub_events(topic);
-CREATE INDEX idx_pubsub_events_type ON pubsub_events(event_type);

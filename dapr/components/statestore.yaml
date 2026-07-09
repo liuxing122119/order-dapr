@@ -12,7 +12,5 @@ spec:
       value: ""
     - name: actorStateStore
       value: "true"
-    - name: concurrency
-      value: "first-write"
     - name: keyPrefix
       value: "none"

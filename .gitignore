@@ -1,91 +1,52 @@
-# 程序和插件的二进制文件
+# Build artifacts
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-/bin/
-
-# 使用 `go test -c` 构建的测试二进制文件
 *.test
-
-# Go 覆盖率工具的输出（特别是使用 LiteIDE 时）
 *.out
 
-# 依赖目录（如果使用 vendor 模式可删除此行）
-/vendor/
+# Go vendor
+vendor/
 
-# Go 工作区文件
-go.work
-go.work.sum
-
-# IDE 和编辑器文件
+# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-.project
-.classpath
-.settings/
 
-# 操作系统生成的文件
+# OS files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 Desktop.ini
 
-# 环境变量和密钥文件
+# Dapr runtime
+.dapr/
+components/*.bak
+
+# Logs
+*.log
+logs/
+
+# Environment
 .env
 .env.local
-.env.*.local
-*.env
 
-# 日志文件
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Dapr 运行时日志（自动生成）
-.dapr/logs/
-
-# 数据库文件（本地开发使用）
-*.db
-*.sqlite
-*.sqlite3
-
-# 覆盖率报告
-coverage.html
-coverage.out
-profile.out
-
-# 临时文件
+# Temp files
 tmp/
 temp/
 *.tmp
 *.bak
-*.swp
-*~.nib
+*.cache
 
-# 构建产物
-dist/
-build/
-out/
+# Database (local)
+*.db
+*.sqlite
+*.sqlite3
 
-# Docker 卷数据（本地数据）
-docker-volumes/
-
-# Dapr 相关配置
-# 保留仓库中的 dapr 配置，忽略本地覆盖配置
-/dapr/components/*.local.yaml
-/dapr/config.local.yaml
-
-# 调试文件
-debug
-__debug_bin*
+# Coverage
+coverage.txt
+coverage.html
+profile.out

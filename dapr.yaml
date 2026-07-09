@@ -8,22 +8,22 @@ apps:
     appDirPath: ./services/user-service
     appPort: 5001
     daprHTTPPort: 3501
-    command: ["go", "run", "main.go"]
+    command: ["./user-service.exe"]
 
   - appID: order-service
     appDirPath: ./services/order-service
     appPort: 5002
     daprHTTPPort: 3502
-    command: ["go", "run", "."]
+    command: ["./order-service.exe"]
 
   - appID: payment-service
     appDirPath: ./services/payment-service
     appPort: 5003
     daprHTTPPort: 3503
-    command: ["go", "run", "main.go"]
+    command: ["./payment-service.exe"]
 
   - appID: inventory-service
     appDirPath: ./services/inventory-service
     appPort: 5004
     daprHTTPPort: 3504
-    command: ["go", "run", "main.go"]
+    command: ["./inventory-service.exe"]

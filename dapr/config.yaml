@@ -5,23 +5,14 @@ metadata:
 spec:
   tracing:
     samplingRate: "1"
-    jaeger:
-      endpointAddress: "http://localhost:14268/api/traces"
+    otlp:
+      endpointAddress: "http://localhost:4317"
 
   features:
-    - name: Resiliency
+    - name: Resiliency.V2Alpha
       enabled: true
-
-  accessControlAllowOrigins:
-    - "*"
+    - name: WorkflowAlpha
+      enabled: true
 
   metrics:
     enabled: true
-    rules:
-      - name: dapr_system
-        description: Dapr system metrics
-        labels:
-          app: "dapr"
-        accesses:
-          - action: get
-            defaultAction: allow

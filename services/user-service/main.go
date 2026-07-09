@@ -50,14 +50,25 @@ var (
 func getDaprClient() (client.Client, error) {
 	daprClientOnce.Do(func() {
 		var err error
-		maxRetries := 10
+
+		grpcPort := os.Getenv("DAPR_GRPC_PORT")
+		if grpcPort == "" {
+			// 如果环境变量为空，尝试默认端口
+			grpcPort = "3501"
+			fmt.Printf("[WARN] DAPR_GRPC_PORT not set, using default: %s\n", grpcPort)
+		}
+
+		maxRetries := 50              // 增加到50次
+		retryDelay := 2 * time.Second // 增加到2秒间隔
 		for i := 0; i < maxRetries; i++ {
-			daprClient, err = client.NewClientWithPort(os.Getenv("DAPR_GRPC_PORT"))
+			fmt.Printf("[INFO] Attempting to connect to Dapr gRPC on port %s (%d/%d)...\n", grpcPort, i+1, maxRetries)
+			daprClient, err = client.NewClientWithPort(grpcPort)
 			if err == nil {
+				fmt.Printf("[SUCCESS] Connected to Dapr gRPC on port %s\n", grpcPort)
 				return
 			}
 			if i < maxRetries-1 {
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(retryDelay)
 			}
 		}
 		daprClientErr = fmt.Errorf("failed to initialize Dapr client after %d attempts: %w", maxRetries, err)

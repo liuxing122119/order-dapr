@@ -1,11 +1,4 @@
 services:
-  dapr_redis:
-    container_name: dapr_redis
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    network_mode: bridge
-
   dapr_postgres:
     container_name: dapr_postgres
     image: postgres:15-alpine
@@ -24,7 +17,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    network_mode: bridge
 
   dapr_jaeger:
     container_name: dapr_jaeger
@@ -35,7 +27,6 @@ services:
       - "16686:16686"
       - "4318:4318"
       - "4317:4317"
-    network_mode: bridge
 
 volumes:
   dapr_postgres-data:
