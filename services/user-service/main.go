@@ -11,21 +11,18 @@ import (
 	"syscall"
 	"time"
 
-	"order-dapr/pkg/db"
-
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprhttp "github.com/dapr/go-sdk/service/http"
-	"github.com/google/uuid"
 )
 
 type User struct {
-	UserID    string `json:"userId" db:"user_id"`
-	Name      string `json:"name" db:"name"`
-	Email     string `json:"email" db:"email"`
-	Phone     string `json:"phone" db:"phone"`
-	Address   string `json:"address" db:"address"`
-	CreatedAt string `json:"createdAt,omitempty" db:"created_at"`
+	UserID    string `json:"userId"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	Phone     string `json:"phone"`
+	Address   string `json:"address"`
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 type UserValidationRequest struct {
@@ -69,9 +66,6 @@ func getDaprClient() (client.Client, error) {
 }
 
 func main() {
-	db.InitDB()
-	defer db.CloseDB()
-
 	var err error
 	daprClient, err = getDaprClient()
 	if err != nil {
@@ -85,8 +79,6 @@ func main() {
 
 	s := daprhttp.NewService(appPort)
 
-	s.AddServiceInvocationHandler("/user/create", handleCreateUser)
-	s.AddServiceInvocationHandler("/user/get", handleGetUser)
 	s.AddServiceInvocationHandler("/user/validate", handleValidateUser)
 	s.AddServiceInvocationHandler("/health", handleHealth)
 
@@ -96,7 +88,9 @@ func main() {
 	go func() {
 		<-sigChan
 
+		http.Post("http://localhost:3501/v1.0/shutdown", "application/json", nil)
 		s.Stop()
+		os.Exit(0)
 	}()
 
 	if err := s.Start(); err != nil && err != http.ErrServerClosed {
@@ -125,75 +119,6 @@ func handleHealth(ctx context.Context, in *common.InvocationEvent) (*common.Cont
 	}, nil
 }
 
-func handleCreateUser(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var user User
-	if err := json.Unmarshal(in.Data, &user); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	user.UserID = uuid.New().String()
-	user.CreatedAt = time.Now().Format(time.RFC3339)
-
-	if db.DB != nil {
-		db.DB.ExecContext(ctx,
-			`INSERT INTO users (user_id, name, email, phone, address, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			user.UserID, user.Name, user.Email, user.Phone, user.Address, user.CreatedAt,
-		)
-	}
-
-	userData, _ := json.Marshal(user)
-
-	daprClient.SaveState(ctx, stateStoreName, "user-"+user.UserID, userData, map[string]string{
-		"version": "1",
-	})
-
-	data, _ := json.Marshal(user)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
-func handleGetUser(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req map[string]string
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	var user User
-
-	if db.DB != nil {
-		db.DB.QueryRowContext(ctx,
-			"SELECT user_id, name, email, phone, address, created_at FROM users WHERE user_id = $1",
-			req["userId"],
-		).Scan(&user.UserID, &user.Name, &user.Email, &user.Phone, &user.Address, &user.CreatedAt)
-	}
-
-	if user.UserID == "" {
-		item, err := daprClient.GetState(ctx, stateStoreName, "user-"+req["userId"], nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get user from cache: %w", err)
-		}
-		if item == nil || len(item.Value) == 0 {
-			return nil, fmt.Errorf("user not found: %s", req["userId"])
-		}
-		if err := json.Unmarshal(item.Value, &user); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal user: %w", err)
-		}
-	}
-
-	response := map[string]interface{}{
-		"user":   user,
-		"source": "postgresql",
-	}
-	data, _ := json.Marshal(response)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
 // handleValidateUser - 服务间调用接口：供Order Service验证用户有效性（模块1核心）
 func handleValidateUser(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
 	var req UserValidationRequest
@@ -210,43 +135,33 @@ func handleValidateUser(ctx context.Context, in *common.InvocationEvent) (*commo
 		return &common.Content{Data: data, ContentType: "application/json"}, nil
 	}
 
-	var user User
-
-	if db.DB != nil {
-		db.DB.QueryRowContext(ctx,
-			"SELECT user_id, name, email, phone, address, created_at FROM users WHERE user_id = $1",
-			req.UserID,
-		).Scan(&user.UserID, &user.Name, &user.Email, &user.Phone, &user.Address, &user.CreatedAt)
+	item, err := daprClient.GetState(ctx, stateStoreName, "user-"+req.UserID, nil)
+	if err != nil {
+		response := UserValidationResponse{
+			Valid:   false,
+			Message: fmt.Sprintf("error checking user: %v", err),
+		}
+		data, _ := json.Marshal(response)
+		return &common.Content{Data: data, ContentType: "application/json"}, nil
 	}
 
-	if user.UserID == "" {
-		item, err := daprClient.GetState(ctx, stateStoreName, "user-"+req.UserID, nil)
-		if err != nil {
-			response := UserValidationResponse{
-				Valid:   false,
-				Message: fmt.Sprintf("error checking user: %v", err),
-			}
-			data, _ := json.Marshal(response)
-			return &common.Content{Data: data, ContentType: "application/json"}, nil
+	if item == nil || len(item.Value) == 0 {
+		response := UserValidationResponse{
+			Valid:   false,
+			Message: "user not found",
 		}
+		data, _ := json.Marshal(response)
+		return &common.Content{Data: data, ContentType: "application/json"}, nil
+	}
 
-		if item == nil || len(item.Value) == 0 {
-			response := UserValidationResponse{
-				Valid:   false,
-				Message: "user not found",
-			}
-			data, _ := json.Marshal(response)
-			return &common.Content{Data: data, ContentType: "application/json"}, nil
+	var user User
+	if err := json.Unmarshal(item.Value, &user); err != nil {
+		response := UserValidationResponse{
+			Valid:   false,
+			Message: "internal error",
 		}
-
-		if err := json.Unmarshal(item.Value, &user); err != nil {
-			response := UserValidationResponse{
-				Valid:   false,
-				Message: "internal error",
-			}
-			data, _ := json.Marshal(response)
-			return &common.Content{Data: data, ContentType: "application/json"}, nil
-		}
+		data, _ := json.Marshal(response)
+		return &common.Content{Data: data, ContentType: "application/json"}, nil
 	}
 
 	response := UserValidationResponse{

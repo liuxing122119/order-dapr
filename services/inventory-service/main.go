@@ -10,12 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"order-dapr/pkg/db"
+	"order-dapr/db"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprhttp "github.com/dapr/go-sdk/service/http"
-	"github.com/google/uuid"
 )
 
 type Inventory struct {
@@ -57,9 +56,7 @@ func main() {
 
 	s := daprhttp.NewService(appPort)
 
-	s.AddServiceInvocationHandler("/inventory/create", handleCreateInventory)
 	s.AddServiceInvocationHandler("/inventory/check", handleCheckInventory)
-	s.AddServiceInvocationHandler("/inventory/get", handleGetInventory)
 	s.AddServiceInvocationHandler("/inventory/update", handleUpdateInventory)
 	s.AddServiceInvocationHandler("/health", handleHealth)
 
@@ -77,7 +74,9 @@ func main() {
 	go func() {
 		<-sigChan
 
+		http.Post("http://localhost:3504/v1.0/shutdown", "application/json", nil)
 		s.Stop()
+		os.Exit(0)
 	}()
 
 	if err := s.Start(); err != nil && err != http.ErrServerClosed {
@@ -145,33 +144,6 @@ func handleOrderCreatedEvent(ctx context.Context, e *common.TopicEvent) (retry b
 	return false, nil
 }
 
-func handleCreateInventory(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var item Inventory
-	if err := json.Unmarshal(in.Data, &item); err != nil {
-		return nil, err
-	}
-
-	item.ProductID = uuid.New().String()
-
-	if db.DB != nil {
-		db.DB.ExecContext(ctx,
-			`INSERT INTO inventory (product_id, product_name, quantity, price, category, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			item.ProductID, item.ProductName, item.Quantity, item.Price, item.Category,
-			time.Now(), time.Now(),
-		)
-	}
-
-	itemData, _ := json.Marshal(item)
-	daprClient.SaveState(ctx, stateStoreName, "inventory-"+item.ProductID, itemData, nil)
-
-	data, _ := json.Marshal(item)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
 func handleCheckInventory(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
 	var items []struct {
 		ProductID string `json:"productId"`
@@ -227,29 +199,6 @@ func handleCheckInventory(ctx context.Context, in *common.InvocationEvent) (*com
 	}
 
 	data, _ := json.Marshal(response)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
-func handleGetInventory(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req map[string]string
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, err
-	}
-
-	item, err := daprClient.GetState(ctx, stateStoreName, "inventory-"+req["productId"], nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var inventory Inventory
-	if err := json.Unmarshal(item.Value, &inventory); err != nil {
-		return nil, err
-	}
-
-	data, _ := json.Marshal(inventory)
 	return &common.Content{
 		Data:        data,
 		ContentType: "application/json",

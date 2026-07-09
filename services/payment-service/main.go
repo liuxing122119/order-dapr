@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"order-dapr/pkg/db"
+	"order-dapr/db"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
@@ -57,9 +57,7 @@ func main() {
 
 	s := daprhttp.NewService(appPort)
 
-	s.AddServiceInvocationHandler("/payment/create", handleCreatePayment)
 	s.AddServiceInvocationHandler("/payment/process", handleProcessPayment)
-	s.AddServiceInvocationHandler("/payment/get", handleGetPayment)
 	s.AddServiceInvocationHandler("/health", handleHealth)
 
 	subscription := &common.Subscription{
@@ -76,7 +74,9 @@ func main() {
 	go func() {
 		<-sigChan
 
+		http.Post("http://localhost:3503/v1.0/shutdown", "application/json", nil)
 		s.Stop()
+		os.Exit(0)
 	}()
 
 	if err := s.Start(); err != nil && err != http.ErrServerClosed {
@@ -140,30 +140,6 @@ func handleOrderCreatedEvent(ctx context.Context, e *common.TopicEvent) (retry b
 	return false, nil
 }
 
-func handleCreatePayment(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var payment Payment
-	if err := json.Unmarshal(in.Data, &payment); err != nil {
-		return nil, err
-	}
-
-	payment.PaymentID = uuid.New().String()
-	payment.Status = "pending"
-	payment.PaymentMethod = "credit_card"
-	payment.CreatedAt = "2026-07-01T00:00:00Z"
-
-	paymentData, _ := json.Marshal(payment)
-	err := daprClient.SaveState(ctx, stateStoreName, "payment-"+payment.PaymentID, paymentData, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	data, _ := json.Marshal(payment)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
 func handleProcessPayment(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(in.Data, &req); err != nil {
@@ -190,29 +166,6 @@ func handleProcessPayment(ctx context.Context, in *common.InvocationEvent) (*com
 
 	paymentData, _ := json.Marshal(payment)
 	daprClient.SaveState(ctx, stateStoreName, "payment-"+payment.PaymentID, paymentData, nil)
-
-	data, _ := json.Marshal(payment)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
-func handleGetPayment(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req map[string]string
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, err
-	}
-
-	item, err := daprClient.GetState(ctx, stateStoreName, "payment-"+req["paymentId"], nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var payment Payment
-	if err := json.Unmarshal(item.Value, &payment); err != nil {
-		return nil, err
-	}
 
 	data, _ := json.Marshal(payment)
 	return &common.Content{

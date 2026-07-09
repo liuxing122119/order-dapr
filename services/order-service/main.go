@@ -11,12 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"order-dapr/pkg/db"
+	"order-dapr/db"
 
 	"github.com/dapr/go-sdk/client"
 	"github.com/dapr/go-sdk/service/common"
 	daprhttp "github.com/dapr/go-sdk/service/http"
-	"github.com/google/uuid"
 )
 
 type Order struct {
@@ -43,12 +42,6 @@ type OrderItem struct {
 type CreateOrderRequest struct {
 	UserID string      `json:"userId"`
 	Items  []OrderItem `json:"items"`
-}
-
-type OrderStatusUpdate struct {
-	OrderID      string `json:"orderId"`
-	Status       string `json:"status"`
-	UpdateReason string `json:"updateReason,omitempty"`
 }
 
 const (
@@ -86,15 +79,13 @@ func main() {
 	}
 	defer daprClient.Close()
 
-	initWorkflowEngine()
+	initializeWorkflowSystem()
 	startWorkflowEngine()
 
 	s := daprhttp.NewService(appPort)
 
 	s.AddServiceInvocationHandler("/order/create", handleCreateOrderWithWorkflow)
-	s.AddServiceInvocationHandler("/order/create/legacy", handleCreateOrder)
 	s.AddServiceInvocationHandler("/order/get", handleGetOrder)
-	s.AddServiceInvocationHandler("/order/status/update", handleUpdateOrderStatus)
 	s.AddServiceInvocationHandler("/health", handleHealth)
 
 	paymentSubscription := &common.Subscription{
@@ -119,8 +110,10 @@ func main() {
 	go func() {
 		<-sigChan
 
-		stopWorkflowEngine()
+		http.Post("http://localhost:3502/v1.0/shutdown", "application/json", nil)
+		stopWorkflowEngineSystem()
 		s.Stop()
+		os.Exit(0)
 	}()
 
 	if err := s.Start(); err != nil && err != http.ErrServerClosed {
@@ -162,239 +155,6 @@ func handleHealth(ctx context.Context, in *common.InvocationEvent) (*common.Cont
 		Data:        data,
 		ContentType: "application/json",
 	}, nil
-}
-
-func handleCreateOrder(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req CreateOrderRequest
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, fmt.Errorf("invalid order request: %w", err)
-	}
-
-	if req.UserID == "" || len(req.Items) == 0 {
-		return nil, fmt.Errorf("userId and items are required")
-	}
-
-	orderID := uuid.New().String()
-
-	order := Order{
-		OrderID:          orderID,
-		UserID:           req.UserID,
-		Items:            req.Items,
-		Status:           "pending",
-		CreatedAt:        time.Now().Format(time.RFC3339),
-		Version:          1,
-		UserValidated:    false,
-		InventoryChecked: false,
-		PaymentProcessed: false,
-	}
-
-	totalAmount := calculateTotalAmount(req.Items)
-	order.TotalAmount = totalAmount
-
-	if err := saveOrderToState(ctx, order); err != nil {
-		return nil, fmt.Errorf("failed to persist initial order: %w", err)
-	}
-
-	orderEventData, _ := json.Marshal(order)
-	daprClient.PublishEvent(ctx, pubsubName, "order.created", orderEventData)
-
-	go func() {
-		backgroundCtx := context.Background()
-		processOrderWorkflow(backgroundCtx, order)
-	}()
-
-	response := map[string]interface{}{
-		"orderId": orderID,
-		"status":  "processing",
-		"message": "Order created with pubsub event and legacy workflow started",
-		"policies": map[string]string{
-			"retry":          retryPolicyName,
-			"timeout":        timeoutPolicyName,
-			"circuitBreaker": circuitBreakerName,
-		},
-		"eventsPublished": []string{"order.created"},
-	}
-
-	data, _ := json.Marshal(response)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
-func processOrderWorkflow(ctx context.Context, order Order) error {
-	if err := validateUserViaServiceCall(ctx, &order); err != nil {
-		return updateOrderFailed(ctx, order, "user_validation_failed", err.Error())
-	}
-
-	if err := checkInventoryViaServiceCall(ctx, &order); err != nil {
-		return updateOrderFailed(ctx, order, "inventory_check_failed", err.Error())
-	}
-
-	if err := processPaymentViaServiceCall(ctx, &order); err != nil {
-		return updateOrderFailed(ctx, order, "payment_failed", err.Error())
-	}
-
-	if err := completeOrder(ctx, &order); err != nil {
-		return fmt.Errorf("failed to complete order: %w", err)
-	}
-
-	return nil
-}
-
-func validateUserViaServiceCall(ctx context.Context, order *Order) error {
-	reqData := map[string]string{
-		"userId": order.UserID,
-	}
-	content, _ := json.Marshal(reqData)
-
-	resp, err := daprClient.InvokeMethodWithContent(ctx, userServiceAppId, "user/validate", "post",
-		&client.DataContent{
-			ContentType: "application/json",
-			Data:        content,
-		})
-	if err != nil {
-		return fmt.Errorf("service invocation failed (user validation): %w", err)
-	}
-
-	var validationResp struct {
-		Valid   bool            `json:"valid"`
-		Message string          `json:"message"`
-		User    json.RawMessage `json:"user,omitempty"`
-	}
-	if err := json.Unmarshal(resp, &validationResp); err != nil {
-		return fmt.Errorf("failed to parse user validation response: %w", err)
-	}
-
-	if !validationResp.Valid {
-		return fmt.Errorf("user validation failed: %s", validationResp.Message)
-	}
-
-	order.UserValidated = true
-	order.Status = "user_validated"
-
-	if err := saveOrderToState(ctx, *order); err != nil {
-		return fmt.Errorf("failed to save order after user validation: %w", err)
-	}
-
-	return nil
-}
-
-func checkInventoryViaServiceCall(ctx context.Context, order *Order) error {
-	itemsForCheck := make([]map[string]interface{}, len(order.Items))
-	for i, item := range order.Items {
-		itemsForCheck[i] = map[string]interface{}{
-			"productId": item.ProductID,
-			"quantity":  item.Quantity,
-		}
-	}
-	content, _ := json.Marshal(itemsForCheck)
-
-	resp, err := daprClient.InvokeMethodWithContent(ctx, inventoryAppId, "inventory/check", "post",
-		&client.DataContent{
-			ContentType: "application/json",
-			Data:        content,
-		})
-	if err != nil {
-		return fmt.Errorf("service invocation failed (inventory check): %w", err)
-	}
-
-	var inventoryResp struct {
-		AllAvailable bool                     `json:"allAvailable"`
-		Items        []map[string]interface{} `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &inventoryResp); err != nil {
-		return fmt.Errorf("failed to parse inventory response: %w", err)
-	}
-
-	if !inventoryResp.AllAvailable {
-		return fmt.Errorf("insufficient inventory for some items")
-	}
-
-	order.InventoryChecked = true
-	order.Status = "inventory_checked"
-
-	if err := saveOrderToState(ctx, *order); err != nil {
-		return fmt.Errorf("failed to save order after inventory check: %w", err)
-	}
-
-	return nil
-}
-
-func processPaymentViaServiceCall(ctx context.Context, order *Order) error {
-	paymentReq := map[string]interface{}{
-		"orderId": order.OrderID,
-		"amount":  order.TotalAmount,
-	}
-	content, _ := json.Marshal(paymentReq)
-
-	resp, err := daprClient.InvokeMethodWithContent(ctx, paymentAppId, "payment/process", "post",
-		&client.DataContent{
-			ContentType: "application/json",
-			Data:        content,
-		})
-	if err != nil {
-		return fmt.Errorf("service invocation failed (payment): %w", err)
-	}
-
-	var paymentResp struct {
-		PaymentID string `json:"paymentId"`
-		Status    string `json:"status"`
-	}
-	if err := json.Unmarshal(resp, &paymentResp); err != nil {
-		return fmt.Errorf("failed to parse payment response: %w", err)
-	}
-
-	if paymentResp.Status != "completed" {
-		return fmt.Errorf("payment not completed, status: %s", paymentResp.Status)
-	}
-
-	order.PaymentProcessed = true
-	order.Status = "payment_processed"
-
-	if err := saveOrderToState(ctx, *order); err != nil {
-		return fmt.Errorf("failed to save order after payment: %w", err)
-	}
-
-	return nil
-}
-
-func completeOrder(ctx context.Context, order *Order) error {
-	now := time.Now().Format(time.RFC3339)
-	order.Status = "completed"
-	order.UpdatedAt = now
-	order.Version++
-
-	orderData, _ := json.Marshal(order)
-
-	metadata := map[string]string{
-		"version":       fmt.Sprintf("%d", order.Version),
-		"completedAt":   now,
-		"userValidated": fmt.Sprintf("%t", order.UserValidated),
-		"inventoryOk":   fmt.Sprintf("%t", order.InventoryChecked),
-		"paymentOk":     fmt.Sprintf("%t", order.PaymentProcessed),
-	}
-
-	err := daprClient.SaveState(ctx, stateStoreName, "order-"+order.OrderID, orderData, metadata)
-	if err != nil {
-		return fmt.Errorf("failed to save completed order state to Redis: %w", err)
-	}
-
-	daprClient.PublishEvent(ctx, pubsubName, "orders-completed", orderData)
-
-	return nil
-}
-
-func updateOrderFailed(ctx context.Context, order Order, status, reason string) error {
-	order.Status = status
-	order.UpdatedAt = time.Now().Format(time.RFC3339)
-	order.Version++
-
-	if err := saveOrderToState(ctx, order); err != nil {
-		return fmt.Errorf("failed to update failed order: %w", err)
-	}
-
-	return fmt.Errorf("order failed [%s]: %s", status, reason)
 }
 
 func saveOrderToState(ctx context.Context, order Order) error {
@@ -475,40 +235,6 @@ func handleGetOrder(ctx context.Context, in *common.InvocationEvent) (*common.Co
 	}
 
 	data, _ := json.Marshal(response)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
-}
-
-func handleUpdateOrderStatus(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req OrderStatusUpdate
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	item, err := daprClient.GetState(ctx, stateStoreName, "order-"+req.OrderID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current order: %w", err)
-	}
-	if item == nil {
-		return nil, fmt.Errorf("order not found: %s", req.OrderID)
-	}
-
-	var order Order
-	if err := json.Unmarshal(item.Value, &order); err != nil {
-		return nil, fmt.Errorf("failed to parse order: %w", err)
-	}
-
-	order.Status = req.Status
-	order.UpdatedAt = time.Now().Format(time.RFC3339)
-	order.Version++
-
-	if err := saveOrderToState(ctx, order); err != nil {
-		return nil, fmt.Errorf("failed to update order (possible conflict): %w", err)
-	}
-
-	data, _ := json.Marshal(order)
 	return &common.Content{
 		Data:        data,
 		ContentType: "application/json",

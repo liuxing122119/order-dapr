@@ -1,4 +1,11 @@
 services:
+  dapr_redis:
+    container_name: dapr_redis
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    network_mode: bridge
+
   dapr_postgres:
     container_name: dapr_postgres
     image: postgres:15-alpine

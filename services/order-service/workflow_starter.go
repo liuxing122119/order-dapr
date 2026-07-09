@@ -27,13 +27,28 @@ var (
 	instanceCounter   int64
 )
 
-func initWorkflowEngine() error {
+func initializeWorkflowSystem() error {
 	initTelemetry()
-	return nil
+	return initDaprWorkflowEngine()
 }
 
 func startWorkflowEngine() error {
 	time.Sleep(500 * time.Millisecond)
+	return nil
+}
+
+func initDaprWorkflowEngine() error {
+
+	if err := initWorkflowEngine(); err != nil {
+		return nil
+	}
+
+	go func() {
+		time.Sleep(10 * time.Second)
+		ctx := context.Background()
+		migrateRunningWorkflowsToV2(ctx)
+	}()
+
 	return nil
 }
 
@@ -74,35 +89,61 @@ func handleCreateOrderWithWorkflow(ctx context.Context, in *common.InvocationEve
 		UserID:      req.UserID,
 		Items:       req.Items,
 		TotalAmount: totalAmount,
+		Version:     CurrentVersion,
+	}
+
+	var actualInstanceID string
+	var startErr error
+
+	if taskHubClient != nil {
+		actualInstanceID, startErr = startWorkflowInstance(ctx, workflowInput)
+		if startErr != nil {
+			actualInstanceID = instanceID
+		}
+	} else {
+		actualInstanceID = instanceID
 	}
 
 	instance := WorkflowInstance{
-		InstanceID:   instanceID,
+		InstanceID:   actualInstanceID,
 		OrderID:      orderID,
 		Status:       "running",
 		CustomStatus: "validating_inventory",
 		CreatedAt:    time.Now(),
 	}
 
-	workflowInstances.Store(instanceID, instance)
+	workflowInstances.Store(actualInstanceID, instance)
 
-	go func() {
-		backgroundCtx := context.Background()
-		executeAndMonitorWorkflow(backgroundCtx, instanceID, workflowInput)
-	}()
+	if taskHubClient == nil || startErr != nil {
+		go func() {
+			backgroundCtx := context.Background()
+			executeAndMonitorWorkflow(backgroundCtx, actualInstanceID, workflowInput)
+		}()
+	} else {
+		go func() {
+			backgroundCtx := context.Background()
+			monitorDaprWorkflow(backgroundCtx, actualInstanceID, workflowInput)
+		}()
+	}
+
+	versionInfo := getWorkflowVersionInfo()
 
 	response := map[string]interface{}{
 		"orderId":    orderID,
 		"status":     "processing",
-		"instanceId": instanceID,
-		"message":    "Order created and Dapr workflow engine started",
+		"instanceId": actualInstanceID,
+		"message":    "Order created and Dapr Workflow Engine started with version management",
 		"engineInfo": map[string]string{
-			"type":            "dapr-workflow-engine",
-			"stateManagement": "event-sourcing (sidecar managed)",
-			"faultTolerance":  "enabled (retry/timeout/circuit-breaker)",
-			"tracing":         "opentelemetry + jaeger",
-			"metrics":         "prometheus (:9090/metrics)",
+			"type":              "dapr-workflow-engine-v2",
+			"stateManagement":   "event-sourcing (durabletask-go backend)",
+			"faultTolerance":    "enabled (retry/timeout/circuit-breaker)",
+			"tracing":           "opentelemetry + jaeger",
+			"metrics":           "prometheus (:9090/metrics)",
+			"versionManagement": "enabled",
+			"currentVersion":    CurrentVersion,
+			"backend":           "gRPC (localhost:4001)",
 		},
+		"versionInfo": versionInfo,
 		"workflowActivities": []map[string]string{
 			{"step": "1", "name": "ValidateInventoryActivity", "description": "验证库存活动：调用库存服务确认所需库存充足"},
 			{"step": "2", "name": "ProcessPaymentActivity", "description": "处理支付活动：调用支付服务扣款"},
@@ -110,9 +151,8 @@ func handleCreateOrderWithWorkflow(ctx context.Context, in *common.InvocationEve
 			{"step": "4", "name": "SendNotificationActivity", "description": "发送通知活动：发送订单状态通知"},
 		},
 		"endpoints": map[string]string{
-			"getStatus": "/workflow/status?instanceId=" + instanceID,
-			"getOrder":  "/order/get?orderId=" + orderID,
-			"health":    "/health",
+			"getOrder": "/order/get?orderId=" + orderID,
+			"health":   "/health",
 		},
 	}
 
@@ -126,7 +166,7 @@ func handleCreateOrderWithWorkflow(ctx context.Context, in *common.InvocationEve
 func executeAndMonitorWorkflow(ctx context.Context, instanceID string, input OrderWorkflowInput) {
 	updateInstanceStatus(instanceID, "running", "validating_inventory")
 
-	output, err := ExecuteOrderProcessingWorkflow(ctx, input)
+	output, err := ExecuteOrderProcessingWorkflowV1ForLegacy(ctx, input)
 
 	now := time.Now()
 
@@ -139,50 +179,69 @@ func executeAndMonitorWorkflow(ctx context.Context, instanceID string, input Ord
 	updateOrderFromWorkflowOutput(ctx, input.OrderID, output)
 }
 
-func handleGetWorkflowStatus(ctx context.Context, in *common.InvocationEvent) (*common.Content, error) {
-	var req map[string]string
-	if err := json.Unmarshal(in.Data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+func monitorDaprWorkflow(ctx context.Context, instanceID string, input OrderWorkflowInput) {
+	updateInstanceStatus(instanceID, "running", "dapr_workflow_engine_processing")
+
+	timeout := 5 * time.Minute
+	output, err := waitForWorkflowCompletion(ctx, instanceID, timeout)
+
+	now := time.Now()
+
+	if err != nil {
+		updateInstanceCompleted(instanceID, "failed", OrderWorkflowOutput{
+			OrderID:         input.OrderID,
+			Status:          "failed",
+			Error:           err.Error(),
+			WorkflowVersion: CurrentVersion,
+		}, err.Error(), now)
+	} else {
+		updateInstanceCompleted(instanceID, "completed", output, "", now)
 	}
 
-	instanceID := req["instanceId"]
-	if instanceID == "" {
-		return nil, fmt.Errorf("instanceId is required")
+	updateOrderFromWorkflowOutput(ctx, input.OrderID, output)
+}
+
+func ExecuteOrderProcessingWorkflowV1ForLegacy(ctx context.Context, input OrderWorkflowInput) (OrderWorkflowOutput, error) {
+
+	legacyInput := input
+	legacyInput.Version = "v1"
+
+	output, err := executeLegacyWorkflowV1(ctx, legacyInput)
+	return output, err
+}
+
+func executeLegacyWorkflowV1(ctx context.Context, input OrderWorkflowInput) (OrderWorkflowOutput, error) {
+	startTime := time.Now()
+	wfCtx := recordWorkflowStart(ctx, WorkflowNameV1)
+	defer func() {
+		recordWorkflowComplete(wfCtx, WorkflowNameV1, "completed", time.Since(startTime))
+	}()
+
+	output := OrderWorkflowOutput{
+		OrderID:         input.OrderID,
+		WorkflowVersion: "v1",
 	}
 
-	obj, ok := workflowInstances.Load(instanceID)
-	if !ok {
-		return nil, fmt.Errorf("workflow instance not found: %s", instanceID)
+	output = executeValidateInventoryActivityLegacy(wfCtx, output, input)
+	if output.Status == "failed" || output.Status == "inventory_unavailable" {
+		return output, fmt.Errorf("workflow v1 failed at inventory validation")
 	}
 
-	instance := obj.(WorkflowInstance)
-
-	response := map[string]interface{}{
-		"instanceId":   instance.InstanceID,
-		"orderId":      instance.OrderID,
-		"status":       instance.Status,
-		"customStatus": instance.CustomStatus,
-		"createdAt":    instance.CreatedAt.Format(time.RFC3339),
-		"isCompleted":  instance.Status == "completed" || instance.Status == "failed",
+	output = executeProcessPaymentActivityLegacy(wfCtx, output, input)
+	if output.Status == "failed" || output.Status == "payment_failed" {
+		return output, fmt.Errorf("workflow v1 failed at payment processing")
 	}
 
-	if instance.CompletedAt != nil {
-		response["completedAt"] = instance.CompletedAt.Format(time.RFC3339)
+	output = executeUpdateInventoryActivityLegacy(wfCtx, output, input)
+	if output.Status == "failed" || output.Status == "inventory_update_failed" {
+		return output, fmt.Errorf("workflow v1 failed at inventory update")
 	}
 
-	if instance.Output.Status != "" {
-		response["output"] = instance.Output
-	}
+	executeSendNotificationActivityLegacy(wfCtx, output, input)
+	output.NotificationSent = true
+	output.Status = "completed"
 
-	if instance.Error != "" {
-		response["error"] = instance.Error
-	}
-
-	data, _ := json.Marshal(response)
-	return &common.Content{
-		Data:        data,
-		ContentType: "application/json",
-	}, nil
+	return output, nil
 }
 
 func updateOrderFromWorkflowOutput(ctx context.Context, orderID string, output OrderWorkflowOutput) {
@@ -233,7 +292,8 @@ func updateInstanceCompleted(instanceID string, status string, output OrderWorkf
 	}
 }
 
-func stopWorkflowEngine() error {
+func stopWorkflowEngineSystem() error {
+
 	runningCount := 0
 	workflowInstances.Range(func(key, value interface{}) bool {
 		instance := value.(WorkflowInstance)
@@ -247,5 +307,12 @@ func stopWorkflowEngine() error {
 		time.Sleep(5 * time.Second)
 	}
 
+	stopDaprWorkflowEngine()
 	return nil
+}
+
+func stopDaprWorkflowEngine() {
+	if engine != nil {
+		engine.cancel()
+	}
 }

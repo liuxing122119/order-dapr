@@ -52,6 +52,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Dapr 运行时日志（自动生成）
+.dapr/logs/
+
 # 数据库文件（本地开发使用）
 *.db
 *.sqlite
