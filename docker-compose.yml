@@ -23,10 +23,12 @@ services:
     image: jaegertracing/all-in-one:latest
     environment:
       COLLECTOR_OTLP_ENABLED: true
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
     ports:
-      - "16686:16686"
-      - "4318:4318"
-      - "4317:4317"
+      - "16686:16686"   # Jaeger UI
+      - "9412:9411"     # Zipkin Collector (接收Dapr追踪数据)
+      - "4318:4318"     # OTLP HTTP
+      - "4317:4317"     # OTLP gRPC
 
 volumes:
   dapr_postgres-data:
